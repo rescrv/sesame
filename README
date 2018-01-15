@@ -1,0 +1,149 @@
+sesame
+======
+
+Sesame is a password manager.  I have no good justification for why the world
+needed another password manager except to say that I like using this one and I
+spent about as much time writing it as I spent being uncomfortable trying out
+the various existing options.
+
+To get started using sesame, initialize a passwordfile:
+
+    $ sesame init -p /path/to/passwordfile
+    passphrase: our-passphrase
+    confirm passphrase: our-passphrase
+
+The -p argument is entirely optional and it will default to ~/.passwords if
+you don't provide it.  Examples from this point forward omit the -p option.
+If you're following along at home, make sure to provide it if you're not using
+the default directory.
+
+Another thing to notice if you're following along is that sesame won't
+actually echo our passphrase to the terminal, so you can enter a passphrase in
+private, safe from snooping eyes.
+
+We can store a password in sesame with the "insert" command:
+
+    $ sesame insert example.org alice
+    passphrase: our-passphrase
+    password: alice's password
+
+And we can retrieve it using the "show" command:
+
+    $ sesame show example.org
+    passphrase: our-passphrase
+    alice's password
+
+Let's insert a few more accounts into our password manager:
+
+    $ sesame insert Amazon alice@example.org
+    passphrase: our-passphrase
+    password: a password for shopping
+
+    $ sesame insert Facebook alice199887XoXo
+    passphrase: our-passphrase
+    password: social-media
+
+    $ sesame insert Google alice@gmail.example.com
+    passphrase: our-passphrase
+    password: password-for-gmail
+
+If we now run the "list" command we will see all of our accounts stored by
+sesame:
+
+    $ sesame list
+    passphrase: our-passphrase
+    example.org
+    Amazon
+    Facebook
+    Google
+
+We can search our passwords by providing a pattern to the "list" command:
+
+    $ sesame list e
+    passphrase: our-passphrase
+    example.org
+    Facebook
+    Google
+
+    $ sesame list A
+    passphrase: our-passphrase
+    Amazon
+
+If the pattern uniquely identifies a single login identity, it can be
+provided to the "show" command to show that particular login:
+
+    $ sesame show A
+    passphrase: our-passphrase
+    a password for shopping
+
+It's also possible to change our usernames and passwords.  If we were to
+update Alice's credentials for Amazon, we could do so:
+
+    $ sesame change-username Amazon ALICE
+    passphrase: our-passphrase
+
+    $ sesame update-password Amazon
+    passphrase: our-passphrase
+    password: a-new-password
+    confirm password: a-new-password
+
+    $ sesame show Amazon
+    passphrase: our-passphrase
+    a-new-password
+
+It's also possible to move, copy, and delete different logins:
+
+    $ sesame rm Amazon
+    passphrase: our-passphrase
+
+    $ sesame cp Facebook Facebook2
+    passphrase: our-passphrase
+
+    $ sesame mv Facebook Facebook3
+    passphrase: our-passphrase
+
+Debug
+-----
+
+There's a debug facility built into sesame to dump the contents of a
+well-formed file.  It can probably be made to provide more useful output or be
+more robust, but most error handling is in place already and additional
+defensive programming should be added on an as-needed basis.
+
+    $ sesame dump
+    passphrase: our-passphrase
+    key alg: Xs
+    kdf alg: BK
+    kdf rounds: 128
+    salt: 9b08392f8c973920082ae96bb12ae402
+    checksum: 7ae291f521d8f2cd
+    secret: 65aed04a4b1eebde69e895889f2babf03794b4788508e293e8c6a657cff562b9
+
+    login: example.org
+    username: alice
+    password: alice's password
+
+    login: Facebook3
+    username: alice199887XoXo
+    password: social-media
+
+    login: Google
+    username: alice@gmail.example.com
+    password: password-for-gmail
+
+    login: Facebook2
+    username: alice199887XoXo
+    password: social-media
+
+Testing
+-------
+
+Most testing of sesame was done during development in an ad-hoc way.  Once
+feature complete and usable the test scripts were added on top.  This README
+is one such way of testing.  The 'readme-to-tests' script included in the
+distribution will translate this README into test/readme.sh to be run as part
+of the tests run during "make check".  It uses "expect", but I'm not sold on
+that as a long term test strategy as it is designed to be very tolerant of
+errors and I'm doing backflips to make it be more strict (and that is fragile
+and can fail).  If updating the examples in the README, check the test output
+to see if it runs correctly.

@@ -1,0 +1,70 @@
+#!/usr/bin/python3
+
+PASSPHRASE = 'passphrase: '
+CONFIRM1 = 'confirm passphrase: '
+PASSWORD = 'password: '
+CONFIRM2 = 'confirm password: '
+
+def code_blocks():
+    lines = []
+    state = 'text'
+    for line in open('README'):
+        if line.startswith('    $'):
+            if lines:
+                yield lines
+            lines = []
+        if line.startswith('    '):
+            line = line[4:-1]
+            lines.append(line)
+    if lines:
+        yield lines
+
+def expect(s):
+    return '''expect {
+    "%s" {}
+    timeout { exit 1 }
+    eof { exit 1 }
+}
+''' % s
+
+def send(s):
+    return 'send "%s\\n"' % s
+
+def generate_expect(statement):
+    if statement.startswith('$ '):
+        cmd = statement[2:].split(' ')
+        if len(cmd) >= 2 and cmd[0] == 'sesame':
+            cmd = cmd[:2] + ['-p', '$SESAME_PASSWORDFILE'] + cmd[2:]
+        if len(cmd) >= 1 and cmd[0] == 'sesame':
+            cmd[0] = '$SESAME'
+        return 'spawn ' + ' '.join(cmd)
+    elif statement.startswith(PASSPHRASE):
+        passphrase = statement[len(PASSPHRASE):]
+        return expect(PASSPHRASE) + send(passphrase)
+    elif statement.startswith(CONFIRM1):
+        passphrase = statement[len(CONFIRM1):]
+        return expect(CONFIRM1) + send(passphrase)
+    elif statement.startswith(PASSWORD):
+        password = statement[len(PASSWORD):]
+        return expect(PASSWORD) + send(password)
+    elif statement.startswith(CONFIRM2):
+        passphrase = statement[len(CONFIRM2):]
+        return expect(CONFIRM2) + send(passphrase)
+    else:
+        return expect(statement)
+
+print('''#!/bin/sh
+. $UTILS''')
+
+first = True
+for block in code_blocks():
+    if first:
+        first = False
+        continue
+    print()
+    print('expect << EOF')
+    print('set timeout 1')
+    for b in block:
+        print(generate_expect(b))
+    print('wait')
+    print('EOF')
