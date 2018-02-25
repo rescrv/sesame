@@ -180,7 +180,7 @@ initialize_sensitive_workspace()
         err(1, "mlock");
     }
     explicit_bzero(mapped, bytes);
-    if (sizeof(struct key) > 128)
+    if (sizeof(struct key) != 64)
         errx(1, "assumptions violated");
     if (sizeof(struct login) > 128)
         errx(1, "assumptions violated");
@@ -290,6 +290,14 @@ init(struct sensitive_workspace* sw,
     memmove(sw->buf, &sw->key, sizeof(sw->key));
     if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
         err(1, "can't initialize %s", passwordfile);
+    explicit_bzero(sw->buf, sizeof(sw->buf));
+    /* three empty slots reserved for yubikeys */
+    if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+        err(1, "can't initialize %s", passwordfile);
+    if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+        err(1, "can't initialize %s", passwordfile);
+    if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+        err(1, "can't initialize %s", passwordfile);
 }
 
 static void
@@ -316,6 +324,8 @@ open_and_initialize(struct sensitive_workspace* sw,
 	SHA512Final(sw->digest, &sw->ctx);
 	if (memcmp(sw->key.checksum, sw->digest, sizeof(sw->key.checksum)) != 0)
 		errx(1, "incorrect passphrase");
+    if (lseek(sw->fd, 1024, SEEK_SET) != 1024)
+        errx(1, "could not seek to start of logins");
 }
 
 static int
@@ -379,7 +389,7 @@ step_back(struct sensitive_workspace* sw)
     off_t x = lseek(sw->fd, -256, SEEK_CUR);
     if (x < 0)
         err(1, "lseek");
-    if (x < 256)
+    if (x < 1024)
         errx(1, "internal error");
 }
 
