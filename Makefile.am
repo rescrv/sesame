@@ -10,6 +10,7 @@ EXTRA_DIST += README
 EXTRA_DIST += test/env.sh
 EXTRA_DIST += test/util.sh
 EXTRA_DIST += test/passwordfile
+EXTRA_DIST += test/v1.passwordfile
 EXTRA_DIST += portability.patch
 EXTRA_DIST += readme-to-tests
 EXTRA_DIST += update.sh
@@ -39,10 +40,12 @@ test_sesame_LDADD = $(sesame_LDADD)
 
 dist_check_SCRIPTS =
 dist_check_SCRIPTS += test/base.sh
+dist_check_SCRIPTS += test/format.sh
 dist_check_SCRIPTS += test/passphrases.sh
 dist_check_SCRIPTS += test/readme.sh
 
 TESTS =
 TESTS += test/base.sh
+TESTS += test/format.sh
 TESTS += test/passphrases.sh
 TESTS += test/readme.sh
