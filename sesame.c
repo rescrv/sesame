@@ -28,6 +28,7 @@
 #include "config.h"
 
 /* C */
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -64,6 +65,9 @@
 
 #include "sha2.h"
 #include "tweetnacl.h"
+#if ENABLE_YUBIKEY
+#include "yubikey.h"
+#endif
 
 #define KEYALG "Xs"
 #define KDFALG "BK"
@@ -114,6 +118,18 @@ struct key
     uint8_t secret[KEYBYTES];
 };
 
+// A yubikey challenge is a constant within the file that is provided to the
+// yubikey in HMAC SHA1 mode.  The output of the HMAC is run through the KDF
+// (struct key) to turn it from 20 random bytes to 32 random-ish bytes that are
+// xor'd against key.secret.
+struct yubikey
+{
+    uint32_t serial;
+    uint8_t slot;
+    uint8_t challenge[27];
+    struct key key;
+};
+
 struct login
 {
     char login[32];
@@ -130,6 +146,7 @@ struct sensitive_workspace
     uint8_t digest[SHA512_DIGEST_LENGTH];
     uint8_t xorkey[KEYBYTES];
     struct key key;
+    struct yubikey yubikey;
     SHA2_CTX ctx;
     struct login login;
     struct login to_show;
@@ -157,6 +174,7 @@ usage(const char *error)
         "\t%1$s mv [-p passwordfile] old-login new-login\n"
         "\t%1$s cp [-p passwordfile] old-login new-login\n"
         "\t%1$s rm [-p passwordfile] login\n"
+        "\t%1$s add-yubikey [-p passwordfile] serial slot\n"
         "XXX generating passwords\n"
         , __progname);
     exit(1);
@@ -181,6 +199,8 @@ initialize_sensitive_workspace()
     }
     explicit_bzero(mapped, bytes);
     if (sizeof(struct key) != 64)
+        errx(1, "assumptions violated");
+    if (sizeof(struct yubikey) > 96)
         errx(1, "assumptions violated");
     if (sizeof(struct login) > 128)
         errx(1, "assumptions violated");
@@ -221,7 +241,7 @@ extern int
 bcrypt_pbkdf(const char *pass, size_t passlen, const uint8_t *salt, size_t saltlen,
     uint8_t *key, size_t keylen, unsigned int rounds);
 static void
-kdf(struct sensitive_workspace* sw, /*XXX fold these all in to read sw directly*/
+kdf(struct sensitive_workspace* sw,
     uint8_t *salt, size_t saltlen, int rounds, int allowstdin, int confirm,
     uint8_t *key, size_t keylen)
 {
@@ -269,11 +289,11 @@ init(struct sensitive_workspace* sw,
     SHA512Update(&sw->ctx, sw->key.secret, sizeof(sw->key.secret));
     SHA512Final(sw->digest, &sw->ctx);
 
-    memcpy(sw->key.keyalg, KEYALG, 2);
-    memcpy(sw->key.kdfalg, KDFALG, 2);
+    memmove(sw->key.keyalg, KEYALG, 2);
+    memmove(sw->key.kdfalg, KDFALG, 2);
     sw->key.kdfrounds = 128;
     arc4random_buf(sw->key.salt, sizeof(sw->key.salt));
-    memcpy(sw->key.checksum, sw->digest, sizeof(sw->key.checksum));
+    memmove(sw->key.checksum, sw->digest, sizeof(sw->key.checksum));
     kdf(sw, sw->key.salt, sizeof(sw->key.salt),
         sw->key.kdfrounds, ALLOW_STDIN, 1,
         sw->xorkey, sizeof(sw->xorkey));
@@ -300,23 +320,10 @@ init(struct sensitive_workspace* sw,
         err(1, "can't initialize %s", passwordfile);
 }
 
-static void
-open_and_initialize(struct sensitive_workspace* sw,
-                    const char* passwordfile, int flags)
+static int
+unxor_secret(struct sensitive_workspace* sw)
 {
     int i;
-    sw->fd = open(passwordfile, flags|O_NOFOLLOW, 0600);
-    if (sw->fd < 0)
-        err(1, "can't open %s", passwordfile);
-    if (flock(sw->fd, LOCK_EX) < 0)
-        err(1, "can't lock %s", passwordfile);
-    if (read(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
-        err(1, "can't  read %s", passwordfile);
-    memmove(&sw->key, sw->buf, sizeof(sw->key));
-    sw->key.kdfrounds = ntohl(sw->key.kdfrounds);
-    kdf(sw, sw->key.salt, sizeof(sw->key.salt),
-        sw->key.kdfrounds, ALLOW_STDIN, 0,
-        sw->xorkey, sizeof(sw->xorkey));
     for (i = 0; i < sizeof(sw->key.secret); i++)
         sw->key.secret[i] ^= sw->xorkey[i];
 	SHA512Init(&sw->ctx);
@@ -324,6 +331,49 @@ open_and_initialize(struct sensitive_workspace* sw,
 	SHA512Final(sw->digest, &sw->ctx);
 	if (memcmp(sw->key.checksum, sw->digest, sizeof(sw->key.checksum)) != 0)
 		errx(1, "incorrect passphrase");
+}
+
+static int
+try_reading_yubikey(struct sensitive_workspace* sw,
+                    const char* passwordfile, int idx);
+
+static void
+read_passphrase_or_die(struct sensitive_workspace* sw,
+                       const char* passwordfile)
+{
+    int i;
+    if (lseek(sw->fd, 0, SEEK_SET) != 0)
+        errx(1, "could not seek to start of passwordfile");
+    if (read(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+        err(1, "can't  read %s", passwordfile);
+    memmove(&sw->key, sw->buf, sizeof(sw->key));
+    sw->key.kdfrounds = ntohl(sw->key.kdfrounds);
+    kdf(sw, sw->key.salt, sizeof(sw->key.salt),
+        sw->key.kdfrounds, ALLOW_STDIN, 0,
+        sw->xorkey, sizeof(sw->xorkey));
+    unxor_secret(sw);
+}
+
+static void
+open_and_initialize(struct sensitive_workspace* sw,
+                    const char* passwordfile, int flags)
+{
+    sw->fd = open(passwordfile, flags|O_NOFOLLOW, 0600);
+    if (sw->fd < 0)
+        err(1, "can't open %s", passwordfile);
+    if (flock(sw->fd, LOCK_EX) < 0)
+        err(1, "can't lock %s", passwordfile);
+#if ENABLE_YUBIKEY
+    if (try_reading_yubikey(sw, passwordfile, 0) ||
+        try_reading_yubikey(sw, passwordfile, 1) ||
+        try_reading_yubikey(sw, passwordfile, 2)) {
+    } else {
+#endif
+        explicit_bzero(&sw->yubikey, sizeof(sw->yubikey));
+        read_passphrase_or_die(sw, passwordfile);
+#if ENABLE_YUBIKEY
+    }
+#endif
     if (lseek(sw->fd, 1024, SEEK_SET) != 1024)
         errx(1, "could not seek to start of logins");
 }
@@ -413,6 +463,11 @@ dump(struct sensitive_workspace* sw,
         usage("dump is internal");
     open_and_initialize(sw, passwordfile, O_RDONLY);
 
+    if (sw->yubikey.serial != 0) {
+        printf("from yubikey: %d slot %d\n", sw->yubikey.serial, sw->yubikey.slot);
+    } else {
+        printf("from passphrase\n");
+    }
     printf("key alg: %.2s\n", sw->key.keyalg);
     printf("kdf alg: %.2s\n", sw->key.kdfalg);
     printf("kdf rounds: %u\n", sw->key.kdfrounds);
@@ -646,6 +701,150 @@ rm(struct sensitive_workspace* sw,
     errx(1, "could not find login %s", login);
 }
 
+#if ENABLE_YUBIKEY
+static int
+yubikey_fill_xorkey(struct sensitive_workspace* sw, int timeout_is_err)
+{
+    unsigned char* challenge = sw->buf;
+    unsigned char* response = sw->buf + SESAME_CHALLENGE_SIZE;
+    explicit_bzero(challenge, SESAME_CHALLENGE_SIZE);
+    explicit_bzero(response, SESAME_RESPONSE_BUFFER_SIZE);
+    memmove(challenge, sw->yubikey.challenge, SESAME_CHALLENGE_SIZE);
+    int not_found = 0;
+    int timed_out = 0;
+    if (!sesame_yubikey_challenge_response(
+                sw->yubikey.serial, sw->yubikey.slot,
+                challenge, response,
+                &not_found, &timed_out)) {
+        if (not_found) {
+            return 0;
+        } else if (timed_out) {
+            if (timeout_is_err)
+                errx(1, "yubikey timed out");
+            return 0;
+        } else {
+            errx(1, "couldn't chalresp yubikey");
+        }
+    }
+    if (bcrypt_pbkdf(response, SESAME_RESPONSE_SIZE,
+                sw->yubikey.key.salt, sizeof(sw->yubikey.key.salt),
+                sw->xorkey, sizeof(sw->xorkey), sw->yubikey.key.kdfrounds) == -1)
+        errx(1, "bcrypt pbkdf");
+    return 1;
+}
+
+static int
+try_reading_yubikey(struct sensitive_workspace* sw,
+                    const char* passwordfile, int idx)
+{
+    assert(idx < 3);
+    if (lseek(sw->fd, 256*(idx+1), SEEK_SET) != 256*(idx+1))
+        errx(1, "could not seek to start of passwordfile");
+    if (read(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+        err(1, "can't  read %s", passwordfile);
+    memmove(&sw->yubikey, sw->buf, sizeof(sw->yubikey));
+    sw->yubikey.serial = ntohl(sw->yubikey.serial);
+    sw->yubikey.key.kdfrounds = ntohl(sw->yubikey.key.kdfrounds);
+    if (sw->yubikey.slot == 0)
+        return 0;
+    if (sw->yubikey.slot != 1 && sw->yubikey.slot != 2)
+        errx(1, "invalid yubikey slot (%d)", sw->yubikey.slot);
+    if (!yubikey_fill_xorkey(sw, 0))
+        return 0;
+    memmove(&sw->key, &sw->yubikey.key, sizeof(sw->key));
+    unxor_secret(sw);
+    return 1;
+}
+
+static void
+add_yubikey(struct sensitive_workspace* sw,
+            const char* passwordfile, int argc, const char* argv[])
+{
+    int i;
+    unsigned long serial;
+    unsigned long slot;
+    char* end = NULL;
+    unsigned char emptybuf[256];
+
+    if (argc != 2)
+        usage(NULL);
+    open_and_initialize(sw, passwordfile, O_RDWR);
+
+    serial = strtoul(argv[0], &end, 10);
+    if (*end != '\0' || serial >= UINT32_MAX)
+        errx(1, "invalid yubikey serial number");
+    slot = strtoul(argv[1], &end, 10);
+    if (*end != '\0' || (slot != 1 && slot != 2))
+        errx(1, "invalid yubikey slot");
+    sw->yubikey.serial = serial;
+    sw->yubikey.slot = slot;
+    arc4random_buf(sw->yubikey.challenge, sizeof(sw->yubikey.challenge));
+    memmove(&sw->yubikey.key, &sw->key, sizeof(sw->yubikey.key));
+    arc4random_buf(sw->yubikey.key.salt, sizeof(sw->yubikey.key.salt));
+    if (!yubikey_fill_xorkey(sw, 1))
+        errx(1, "yubikey not found");
+    for (i = 0; i < sizeof(sw->yubikey.key.secret); i++)
+        sw->yubikey.key.secret[i] ^= sw->xorkey[i];
+    sw->yubikey.serial = htonl(sw->yubikey.serial);
+    sw->yubikey.key.kdfrounds = htonl(sw->yubikey.key.kdfrounds);
+    explicit_bzero(emptybuf, sizeof(emptybuf));
+    for (i = 0; i < 3; i++) {
+        if (lseek(sw->fd, 256*(i+1), SEEK_SET) != 256*(i+1))
+            errx(1, "could not seek to read yubikey %d", i);
+        if (read(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+            err(1, "can't  read %s", passwordfile);
+        if (memcmp(emptybuf, sw->buf, 256) == 0) {
+            explicit_bzero(sw->buf, sizeof(sw->buf));
+            memmove(sw->buf, &sw->yubikey, sizeof(sw->yubikey));
+            if (lseek(sw->fd, 256*(i+1), SEEK_SET) != 256*(i+1))
+                errx(1, "could not seek to write yubikey %d", i);
+            if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+                err(1, "can't write yubikey");
+            return;
+        }
+    }
+    errx(1, "no empty slots for yubikey");
+}
+
+static void
+rm_yubikey(struct sensitive_workspace* sw,
+           const char* passwordfile, int argc, const char* argv[])
+{
+    int i;
+    unsigned long serial;
+    unsigned long slot;
+    char* end = NULL;
+    unsigned char emptybuf[256];
+
+    if (argc != 2)
+        usage(NULL);
+    open_and_initialize(sw, passwordfile, O_RDWR);
+
+    serial = htonl(strtoul(argv[0], &end, 10));
+    if (*end != '\0' || serial >= UINT32_MAX)
+        errx(1, "invalid yubikey serial number");
+    slot = strtoul(argv[1], &end, 10);
+    if (*end != '\0' || (slot != 1 && slot != 2))
+        errx(1, "invalid yubikey slot");
+    for (i = 0; i < 3; i++) {
+        if (lseek(sw->fd, 256*(i+1), SEEK_SET) != 256*(i+1))
+            errx(1, "could not seek to read yubikey %d", i);
+        if (read(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+            err(1, "can't  read %s", passwordfile);
+        memmove(&sw->yubikey, sw->buf, sizeof(sw->yubikey));
+        if (sw->yubikey.serial == serial) {
+            if (lseek(sw->fd, 256*(i+1), SEEK_SET) != 256*(i+1))
+                errx(1, "could not seek to clear yubikey %d", i);
+            explicit_bzero(sw->buf, sizeof(sw->buf));
+            if (write(sw->fd, sw->buf, sizeof(sw->buf)) != sizeof(sw->buf))
+                err(1, "can't clear yubikey");
+            return;
+        }
+    }
+    errx(1, "yubikey not found");
+}
+#endif
+
 int
 main(int argc, const char* argv[])
 {
@@ -653,6 +852,12 @@ main(int argc, const char* argv[])
     const char* passwordfile = NULL;
     const char* command = NULL;
     int ch;
+#if ENABLE_YUBIKEY
+    // initialize the yubikey workspace
+    sesame_yubikey_init();
+    // before the sensitive workspace (just in case the yubikey strays in its
+    // pointer management---not that I actually think it has)
+#endif
     sw = initialize_sensitive_workspace();
     if (argc <= 1)
         usage(NULL);
@@ -692,6 +897,18 @@ main(int argc, const char* argv[])
         cp(sw, passwordfile, argc, argv);
     } else if (strcmp("rm", command) == 0) {
         rm(sw, passwordfile, argc, argv);
+    } else if (strcmp("add-yubikey", command) == 0) {
+#if ENABLE_YUBIKEY
+        add_yubikey(sw, passwordfile, argc, argv);
+#else
+        errx(1, "yubikey not supported");
+#endif
+    } else if (strcmp("rm-yubikey", command) == 0) {
+#if ENABLE_YUBIKEY
+        rm_yubikey(sw, passwordfile, argc, argv);
+#else
+        errx(1, "yubikey not supported");
+#endif
     } else {
         usage(NULL);
     }

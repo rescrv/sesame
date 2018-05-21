@@ -21,6 +21,7 @@ noinst_HEADERS =
 noinst_HEADERS += blf.h
 noinst_HEADERS += sha2.h
 noinst_HEADERS += tweetnacl.h
+noinst_HEADERS += yubikey.h
 
 sesame_SOURCES =
 sesame_SOURCES += bcrypt_pbkdf.c
@@ -30,7 +31,13 @@ sesame_SOURCES += regex_match.c
 sesame_SOURCES += sesame.c
 sesame_SOURCES += sha2.c
 sesame_SOURCES += tweetnacl.c
+if ENABLE_YUBIKEY
+sesame_SOURCES += yubikey.c
+endif
 sesame_LDADD = $(BSDLIB)
+if ENABLE_YUBIKEY
+sesame_LDADD += -lykpers-1
+endif
 
 # Build the same binary, but with SESAME_TEST_MODE defined
 check_PROGRAMS = test/sesame

@@ -26,5 +26,12 @@ AC_CHECK_HEADER([readpassphrase.h],[AC_DEFINE([HAVE_READPASSPHRASE_H],[1],[Defin
 AC_CHECK_HEADER([bsd/readpassphrase.h],[AC_DEFINE([HAVE_BSD_READPASSPHRASE_H],[1],[Define to 1 if you have the <bsd/readpassphrase.h> header file.])],,)
 AC_CHECK_HEADER([libutil.h],[AC_DEFINE([HAVE_LIBUTIL_H],[1],[Define to 1 if you have the <libutil.h> header file.])],,)
 AC_CHECK_HEADER([bsd/libutil.h],[AC_DEFINE([HAVE_BSD_LIBUTIL_H],[1],[Define to 1 if you have the <bsd/libutil.h> header file.])],,)
+AC_ARG_ENABLE([yubikey], [AS_HELP_STRING([--enable-yubikey],
+              [enable yubikey challenge-response support @<:@default: yes@:>@])],
+              [enable_yubikey=${enable_yubikey}], [enable_yubikey=yes])
+if test x"${enable_yubikey}" = xyes; then
+    AC_DEFINE([ENABLE_YUBIKEY],[1],[Define to 1 if compiled with yubikey support.])
+fi
+AM_CONDITIONAL([ENABLE_YUBIKEY], [test x"${enable_yubikey}" = xyes])
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
