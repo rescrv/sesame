@@ -2,7 +2,11 @@ if MAKE_NO_PRINT_DIRECTORY
 AM_MAKEFLAGS = --no-print-directory
 endif
 AM_CFLAGS    = -fvisibility=hidden $(WANAL_CFLAGS)
-TESTS_ENVIRONMENT = . $(abs_top_srcdir)/test/env.sh "${abs_top_srcdir}" "${abs_top_builddir}" "${VERSION}";
+TESTS_ENVIRONMENT = \
+	export SESAME_SRCDIR="${abs_top_srcdir}"; \
+	export SESAME_BUILDDIR="${abs_top_builddir}"; \
+	export SESAME_VERSION="${VERSION}"; \
+	. $(abs_top_srcdir)/test/env.sh;
 
 EXTRA_DIST =
 EXTRA_DIST += LICENSE

@@ -31,6 +31,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* POSIX */
 #include <arpa/inet.h>
